@@ -1,2 +1,4 @@
 kafka-python
 pandas
+pydantic
+psycopg[binary]
