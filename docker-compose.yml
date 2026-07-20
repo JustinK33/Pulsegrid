@@ -46,7 +46,7 @@ services:
     container_name: postgres
     environment:
       POSTGRES_USER: justin
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASS}
       POSTGRES_DB: pulsegrid
     ports:
       - "5433:5432"

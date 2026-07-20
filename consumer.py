@@ -15,6 +15,12 @@ class Event(BaseModel):
     itemid: int
     transactionid: int | None = None
 
+class Failed_Event(BaseModel):
+    id: int
+    raw_message: str
+    error: str
+    failed_at: int
+
 consumer = KafkaConsumer(
     "events",
     bootstrap_servers="localhost:19092",
@@ -48,4 +54,10 @@ with psycopg.connect("dbname=pulsegrid user=justin password=password host=localh
                     conn.commit()
                     print(f"flushed {len(valid_events)} to postgres")
                     valid_events = []
+                if failed_events:
+                    rows = [(f["raw"], f["error"]) for f in failed_events]
+                    cur.executemany("INSERT INTO failed_events (raw_message, error) VALUES (%s, %s)", rows)
+                    conn.commit()
+                    print(f"flushed {len(failed_events)} to postgres")
+                    failed_events = []
                 last_flush = time.time() # reset the time to 0 again
