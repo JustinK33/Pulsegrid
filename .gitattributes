@@ -1,0 +1,4 @@
+# The notebook is exploratory analysis, not application code. Its JSON payload is
+# larger than every .py file combined, so GitHub's Linguist reports the repo as
+# Jupyter Notebook. Exclude it from the language stats.
+notebooks/** linguist-documentation
