@@ -23,7 +23,7 @@ with DAG(
         task_id="publish_raw_events",
         bash_command="python -m pulsegrid.streaming.producer --input /opt/airflow/data/raw/events.csv",
     )
-    # 3rd task: runs the consumer reading Redpanda messages to postgres
+    # 3rd of 4 task: runs the consumer reading Redpanda messages to postgres
     consume_events_to_postgres = BashOperator(
         task_id="consume_events_to_postgres",
         bash_command=(
@@ -33,5 +33,15 @@ with DAG(
             "--batch-size 100"
         ),
     )
+    # 4th task: rebuilds the curated summary tables from the loaded events
+    build_summary_tables = BashOperator(
+        task_id="build_summary_tables",
+        bash_command="python -m pulsegrid.transform",
+    )
 
-    init_postgres_schema >> publish_raw_events >> consume_events_to_postgres
+    (
+        init_postgres_schema
+        >> publish_raw_events
+        >> consume_events_to_postgres
+        >> build_summary_tables
+    )

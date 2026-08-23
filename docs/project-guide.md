@@ -10,6 +10,7 @@ It starts with raw CSV files.
 The producer reads the CSV data and sends each row to RedPanda (basically kafka replacement).
 The consumer reads messages from Kafka, validates them, and writes the good rows into Postgres.
 Bad rows go into a separate table so they are not lost.
+A transform step then rebuilds a set of summary tables from the loaded rows.
 Airflow sits above the pipeline and runs the steps in order.
 
 The flow looks like this:
@@ -28,7 +29,17 @@ consumer.py
         |
         v
 Postgres tables: event and failed_events
+        |
+        v
+transform.sql
+        |
+        v
+Postgres tables: event_clean, event_daily_counts,
+                 visitor_funnel, item_popularity
 ```
+
+The first three stages are extract and load.
+The last stage is the transform, which is what makes this an ETL pipeline rather than only ingestion.
 
 ## Why Airflow Is Here
 
@@ -41,6 +52,7 @@ In this project, Airflow runs a small version of the pipeline:
 1. Create the Postgres tables if they do not exist.
 2. Publish events from the CSV file into Kafka.
 3. Consume a limited number of Kafka messages into Postgres.
+4. Rebuild the curated summary tables from whatever has been loaded.
 
 The consumer has a limit because Airflow tasks should finish.
 An infinite Kafka consumer is better as a separate service, not as a normal Airflow task.
@@ -64,19 +76,25 @@ Project data and Airflow internals should not be mixed together.
 This is the Airflow DAG.
 A DAG is a set of tasks and dependencies.
 
-This DAG has three tasks:
+This DAG has four tasks:
 
 1. `init_postgres_schema` creates the database tables.
 2. `publish_raw_events` sends CSV rows to Kafka.
 3. `consume_events_to_postgres` reads Kafka messages into Postgres.
+4. `build_summary_tables` rebuilds the curated analytics tables.
 
-The line at the bottom defines the order:
+The chain at the bottom defines the order:
 
 ```python
-init_postgres_schema >> publish_raw_events >> consume_events_to_postgres
+(
+    init_postgres_schema
+    >> publish_raw_events
+    >> consume_events_to_postgres
+    >> build_summary_tables
+)
 ```
 
-That means the schema task runs first, then the producer, then the consumer.
+That means the schema task runs first, then the producer, then the consumer, then the transform.
 
 ### `src/pulsegrid/config.py`
 
@@ -100,9 +118,9 @@ Validation catches problems early instead of silently writing messy data into th
 ### `src/pulsegrid/database.py`
 
 This file handles database setup.
-It reads the SQL schema file and runs it against Postgres.
+`run_sql_file` executes any SQL file in `sql/` against Postgres, and `ensure_schema` is the thin wrapper that runs `schema.sql`.
 
-Keeping schema setup in one place makes it easier to reuse from the CLI, the consumer, and Airflow.
+Keeping this in one place means the CLI, the consumer, Airflow, and the transform step all share the same connection handling.
 
 ### `src/pulsegrid/init_db.py`
 
@@ -142,6 +160,36 @@ Batching is faster and is closer to how real data pipelines are usually written.
 
 The consumer also supports `--max-records` and `--idle-timeout`.
 Those options make it usable from Airflow because the task can finish.
+
+### `src/pulsegrid/sql/transform.sql`
+
+This is the transform stage.
+It reads the raw `event` table and rebuilds four curated tables:
+
+- `event_clean` is the deduplicated, typed version of `event`.
+  It converts the epoch millisecond `timestamp` into a real UTC timestamp and a `event_date` column.
+- `event_daily_counts` is one row per day and event type, with event counts and distinct visitor and item counts.
+- `visitor_funnel` is one row per visitor, pivoting the event types into `views`, `add_to_carts`, and `transactions` columns, plus first and last seen times.
+- `item_popularity` is one row per item, with the same pivot plus two derived conversion rates.
+
+The rates use `NULLIF` on the denominator.
+Dividing by zero would otherwise abort the whole transform.
+
+Each table is dropped and recreated.
+That is a full refresh, which is the simplest thing that is correct when re-run.
+DDL is transactional in Postgres, so the drop and the rebuild commit together and a reader never sees a missing table.
+
+`event_clean` uses `SELECT DISTINCT` because the producer republishes the entire CSV on every DAG run and the loader has no upsert key.
+Without that, every run would inflate the counts.
+This is a full scan, so it would need to become an incremental load keyed on a natural id before the raw table gets large.
+
+### `src/pulsegrid/transform.py`
+
+This is the command-line entry point Airflow calls for the transform task.
+It runs `transform.sql` and then prints the row count of each curated table.
+
+Printing the counts is cheap observability.
+The Airflow log for the task tells you how much data the run actually produced.
 
 ## Python Practices Used Here
 
@@ -188,9 +236,9 @@ Repeatable steps are important in data engineering because pipelines get rerun o
 
 ## What To Improve Next
 
-Add tests for the event model.
+Add tests for the event model and the transform SQL.
 Add a small sample CSV that is safe to commit.
-Add summary tables for analytics.
+Give the raw loader a natural key so the transform does not have to deduplicate with a full scan.
+Join `item_properties` and `category_tree` into the curated layer, since nothing reads them yet.
+Add sessionization to `event_clean`.
 Add Snowflake as a cloud data warehouse after the local Postgres pipeline is working well.
-Add a final Airflow task that checks row counts after loading.
-Think about idempotency before loading the full dataset repeatedly.
