@@ -7,8 +7,7 @@ It is meant to help someone understand what each file does, how the pieces conne
 
 Pulsegrid is a small data pipeline.
 It starts with raw CSV files.
-The producer reads the CSV data and sends each row to Kafka.
-Redpanda acts like Kafka in this project.
+The producer reads the CSV data and sends each row to RedPanda (basically kafka replacement).
 The consumer reads messages from Kafka, validates them, and writes the good rows into Postgres.
 Bad rows go into a separate table so they are not lost.
 Airflow sits above the pipeline and runs the steps in order.
@@ -33,10 +32,6 @@ Postgres tables: event and failed_events
 
 ## Why Airflow Is Here
 
-Airflow is not a database.
-Airflow is not Kafka.
-Airflow is not where long-running stream code should live forever.
-
 Airflow is a workflow scheduler.
 It is useful when you want to say, "run this step first, then this step, then this step."
 It also gives you logs, retries, task status, and a web UI.
@@ -52,43 +47,6 @@ An infinite Kafka consumer is better as a separate service, not as a normal Airf
 
 ## File Guide
 
-### `README.md`
-
-The README is the front door of the project.
-It gives a quick explanation, setup commands, and a learning plan.
-It should stay short enough that someone can skim it.
-
-### `docs/project-guide.md`
-
-This file is the longer explanation.
-It explains the purpose of the main files and the ideas behind them.
-When the project grows, this is a good place to add notes about decisions, tradeoffs, and lessons learned.
-
-### `.env.example`
-
-This shows which environment variables the project expects.
-It is safe to commit because it uses fake example values.
-
-The real `.env` file should stay local.
-That is where passwords and local settings go.
-
-### `.gitignore`
-
-This tells Git which files should not be committed.
-It ignores local secrets, virtual environments, Python cache files, logs, and raw data.
-
-This is important because raw datasets can be large and secrets should never be stored in Git.
-
-### `.dockerignore`
-
-This tells Docker which files should not be copied into the image build context.
-It keeps builds smaller and avoids sending local-only files like `.env`, `venv/`, logs, and raw data into Docker.
-
-### `requirements.txt`
-
-This lists the Python packages used by the project.
-For example, `pandas` reads CSV files, `pydantic` validates event data, `kafka-python` talks to Kafka, and `psycopg` talks to Postgres.
-
 ### `docker-compose.yml`
 
 This defines the local development services.
@@ -100,30 +58,6 @@ There are two Postgres containers on purpose.
 
 Keeping those separate makes the system easier to reason about.
 Project data and Airflow internals should not be mixed together.
-
-### `Dockerfile.airflow`
-
-This builds the Airflow image used by Docker Compose.
-It starts from the official Airflow image and installs this project's Python dependencies.
-
-This is cleaner than installing packages every time the container starts.
-
-### `data/raw/`
-
-This folder holds the raw CSV files.
-Raw data is the original input data.
-It should usually be treated as read-only.
-
-The CSV files are ignored by Git.
-The `.gitkeep` file exists only so the empty folder can still be tracked.
-
-### `notebooks/`
-
-This folder is for exploration.
-Notebooks are good for learning, plotting, and trying ideas.
-
-Reusable pipeline logic should not live only in notebooks.
-If code is needed every time the pipeline runs, it belongs in `src/pulsegrid/`.
 
 ### `dags/pulsegrid_event_pipeline.py`
 
@@ -143,15 +77,6 @@ init_postgres_schema >> publish_raw_events >> consume_events_to_postgres
 ```
 
 That means the schema task runs first, then the producer, then the consumer.
-
-### `src/pulsegrid/__init__.py`
-
-This makes `pulsegrid` a Python package.
-That lets you run code with commands like:
-
-```bash
-python -m pulsegrid.streaming.producer
-```
 
 ### `src/pulsegrid/config.py`
 
