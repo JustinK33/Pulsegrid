@@ -55,6 +55,13 @@ PYTHONPATH=src python -m pulsegrid.streaming.consumer --max-records 1000 --idle-
 Open Airflow at `http://localhost:8080`.
 The local development username and password are both `airflow`.
 
+## Successful Airflow Run
+
+After triggering `pulsegrid_event_pipeline`, all three tasks should finish successfully.
+The run should look like this in Airflow:
+
+![Successful Airflow DAG run](docs/images/airflow-successful-dag-run.png)
+
 ## Suggested Learning Plan
 
 1. Understand the existing pipeline.

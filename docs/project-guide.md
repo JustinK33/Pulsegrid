@@ -191,5 +191,6 @@ Repeatable steps are important in data engineering because pipelines get rerun o
 Add tests for the event model.
 Add a small sample CSV that is safe to commit.
 Add summary tables for analytics.
+Add Snowflake as a cloud data warehouse after the local Postgres pipeline is working well.
 Add a final Airflow task that checks row counts after loading.
 Think about idempotency before loading the full dataset repeatedly.

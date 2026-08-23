@@ -13,16 +13,17 @@ with DAG(
     catchup=False,
     tags=["pulsegrid", "kafka", "postgres"],
 ) as dag:
+    # 1st of 3 task: create postgres tables
     init_postgres_schema = BashOperator(
         task_id="init_postgres_schema",
         bash_command="python -m pulsegrid.init_db",
     )
-
+    # 2nd of 3 task: runs producer sending the rows to Redpanda
     publish_raw_events = BashOperator(
         task_id="publish_raw_events",
         bash_command="python -m pulsegrid.streaming.producer --input /opt/airflow/data/raw/events.csv",
     )
-
+    # 3rd task: runs the consumer reading Redpanda messages to postgres
     consume_events_to_postgres = BashOperator(
         task_id="consume_events_to_postgres",
         bash_command=(
