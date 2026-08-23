@@ -1,0 +1,10 @@
+.env
+.git
+.DS_Store
+__pycache__/
+*.pyc
+venv/
+logs/
+config/
+plugins/
+data/raw/
