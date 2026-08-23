@@ -3,4 +3,8 @@ venv/
 __pycache__/
 *.pyc
 .DS_Store
-2/
+logs/
+config/
+plugins/
+data/raw/*
+!data/raw/.gitkeep
