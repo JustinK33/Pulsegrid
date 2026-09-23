@@ -1,0 +1,29 @@
+name: ci pipeline
+
+# defining what triggers this workflow
+on:
+    push:
+        branches: [ main ]
+    pull_request:
+        branches: [ main ]
+
+# define automation jobs
+jobs:
+    build-and-test:
+        # choose operation system runner
+        runs-on: ubuntu-latest
+        
+        steps:
+            # clone the repo onto runner
+            - uses: actions/checkout@v4
+
+            # install python
+            - uses: actions/setup-python@v5
+              with: 
+                python-version: "3.12"
+
+            # install dependencies
+            - run: pip install -r requirements.txt
+
+            # prove it works
+            - run: python -m compileall -q src dags
