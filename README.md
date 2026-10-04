@@ -1,106 +1,100 @@
 # Pulsegrid
 
-Pulsegrid is a learning project for practicing data engineering with Kafka-compatible streaming, Postgres storage, notebooks, and Airflow orchestration.
+A small batch ETL pipeline that pushes e-commerce clickstream events through Kafka into Postgres, orchestrated by Airflow.
 
-## What Airflow Adds
+> **This is a learning lab.**
+> I built Pulsegrid to learn data engineering tools and concepts by using them, not to ship a product.
+> The specific things I set out to learn were Apache Airflow, DAGs (tasks, dependencies, manual runs, logs), Kafka-style streaming with Redpanda, producer and consumer patterns, schema validation with a dead-letter table, idempotent re-runs, and the extract, load, transform split.
+> Some choices here are deliberately simple so the concept stays visible.
 
-Airflow is a scheduler and orchestrator for data workflows.
-It lets you define a pipeline as a DAG, which means directed acyclic graph.
-In plain terms, you write tasks and dependencies, and Airflow runs them in order, retries failures, records logs, and shows run history in a web UI.
+## What it does
 
-For this project, Airflow should coordinate finite jobs around the pipeline.
-It should not replace Redpanda/Kafka, Postgres, or an always-running stream processor.
-That is why the example DAG initializes the database schema, publishes raw CSV events into Kafka, consumes a bounded number of events into Postgres, then rebuilds the curated summary tables.
+The input is a raw CSV of shop events, one row per `view`, `addtocart`, or `transaction`, keyed by visitor and item.
+A producer publishes every row to a Kafka topic, a consumer validates each message with Pydantic and batch-inserts it into Postgres, and a SQL transform rebuilds a set of summary tables on top.
+Messages that fail validation go to a `failed_events` table with the error text instead of being dropped.
 
-## Pipeline Stages
+Airflow runs the four steps in order as a single DAG, `pulsegrid_event_pipeline`.
+The point of the setup is to keep each tool in its lane.
+Redpanda carries the messages, Postgres stores them, and Airflow only coordinates finite jobs around them.
+It is not a stream processor and is never asked to be one.
 
-| Stage | Code | What it does |
-| --- | --- | --- |
-| Extract | `src/pulsegrid/streaming/producer.py` | Reads `events.csv` and publishes each row as JSON to the Kafka topic |
-| Load | `src/pulsegrid/streaming/consumer.py` | Validates each message with Pydantic, batch-inserts valid rows into `event` and rejects into `failed_events` |
-| Transform | `src/pulsegrid/sql/transform.sql` | Rebuilds `event_clean` plus three analytics tables from the loaded rows |
+The transform builds `event_clean` (deduplicated, with epoch millis converted to UTC timestamps), `event_daily_counts`, `visitor_funnel`, and `item_popularity` with view-to-cart and cart-to-transaction rates.
 
-The transform step is a full refresh, so it is safe to re-run.
-It also deduplicates, because re-running the DAG republishes the same CSV and the loader has no upsert key.
+## Tech stack
 
-## Project Structure
+- Python 3.12, with `kafka-python`, `pydantic`, `psycopg`, `pandas`, and `matplotlib`
+- [Apache Airflow 3](https://airflow.apache.org/) with the `LocalExecutor`
+- [Redpanda](https://www.redpanda.com/) as the Kafka-compatible broker
+- Postgres 17 for pipeline data, Postgres 16 for Airflow metadata
+- Docker Compose for the local stack
+- Jupyter for exploratory charts in `notebooks/`
+- GitHub Actions CI, which installs dependencies and byte-compiles `src` and `dags`
 
-```text
-.
-├── dags/                     # Airflow DAG definitions
-├── data/raw/                 # Local raw CSV files, ignored by Git
-├── notebooks/                # Exploratory analysis
-├── src/pulsegrid/            # Reusable application code
-│   ├── sql/schema.sql        # Postgres table definitions
-│   ├── sql/transform.sql     # Curated summary table definitions
-│   ├── transform.py          # Rebuilds the curated tables
-│   └── streaming/            # Kafka producer and consumer entry points
-├── docker-compose.yml        # Redpanda, app Postgres, and Airflow services
-├── Dockerfile.airflow        # Airflow image with project dependencies
-└── requirements.txt          # Python dependencies
+## Architecture
+
+```mermaid
+flowchart LR
+    csv[data/raw/events.csv]
+    subgraph airflow[Airflow DAG: pulsegrid_event_pipeline]
+        init[init_postgres_schema]
+        pub[publish_raw_events]
+        con[consume_events_to_postgres]
+        tr[build_summary_tables]
+        init --> pub --> con --> tr
+    end
+    rp[(Redpanda topic: events)]
+    pg[(Postgres: pulsegrid)]
+
+    init -- schema.sql --> pg
+    csv -- CSV rows --> pub
+    pub -- JSON messages --> rp
+    rp -- poll, max 1000 records --> con
+    con -- event, failed_events --> pg
+    tr -- transform.sql --> pg
 ```
 
-For a longer file-by-file explanation, read [docs/project-guide.md](docs/project-guide.md).
+Each DAG task is a `BashOperator` that runs one module from `src/pulsegrid`.
+`publish_raw_events` reads `events.csv` and sends each row as JSON to the `events` topic.
+`consume_events_to_postgres` polls that topic in batches of 100, validates each message against the `Event` model, and stops after 1000 records or 30 idle seconds.
+`build_summary_tables` then drops and rebuilds the curated tables from whatever is in `event`.
 
-## Local Setup
+A successful run in the Airflow UI:
 
-Create a local `.env` file from `.env.example` and choose your own `POSTGRES_PASS`.
-Do not commit `.env`.
+![Successful Airflow DAG run](docs/images/airflow-successful-dag-run.png)
 
-Start the local stack:
+## What building this taught me
+
+Airflow tasks have to end.
+My first instinct was a consumer that polls Kafka forever, which is normal for streaming but means the DAG task never succeeds and nothing downstream runs.
+I gave the consumer `--max-records` and `--idle-timeout` so the Airflow task drains a bounded chunk and exits, and an always-on consumer would belong in its own service instead.
+
+Re-running a DAG duplicates data unless you design for it.
+Every run republishes the whole CSV, and the loader has no upsert key, so after a few runs the raw `event` table had 4000 rows for 2000 real events.
+Instead of fighting that at load time, the transform does a full refresh with `SELECT DISTINCT`, and because DDL is transactional in Postgres the drop and rebuild commit together, so `event_clean` held at 2000 across repeated loads.
+
+Airflow 3 split the old webserver into separate services, and tasks now talk back through an execution API on the API server.
+Inside Docker Compose the default URL points at `localhost`, which from the scheduler container is not the API server.
+Getting to the first green run included setting `AIRFLOW__CORE__EXECUTION_API_SERVER_URL` to `http://airflow-apiserver:8080/execution/`.
+
+## Documentation
+
+- [docs/project-guide.md](docs/project-guide.md) walks through every file in plain language, how the pieces connect, and the Python and data engineering habits the project practices.
+
+## Quick start
+
+Copy `.env.example` to `.env` and set your own `POSTGRES_PASS`.
+Put the raw CSV files in `data/raw/` (they are gitignored).
 
 ```bash
 docker compose up --build
 ```
 
-Run the producer manually:
+Open Airflow at `http://localhost:8080` (local dev login is `airflow` / `airflow`), unpause `pulsegrid_event_pipeline`, and trigger it.
+
+To run a stage by hand outside Airflow:
 
 ```bash
 PYTHONPATH=src python -m pulsegrid.streaming.producer --input data/raw/events.csv
-```
-
-Run the consumer manually:
-
-```bash
 PYTHONPATH=src python -m pulsegrid.streaming.consumer --max-records 1000 --idle-timeout 30
-```
-
-Rebuild the curated summary tables manually:
-
-```bash
 PYTHONPATH=src python -m pulsegrid.transform
 ```
-
-Open Airflow at `http://localhost:8080`.
-The local development username and password are both `airflow`.
-
-## Successful Airflow Run
-
-After triggering `pulsegrid_event_pipeline`, all four tasks should finish successfully.
-The run should look like this in Airflow:
-
-![Successful Airflow DAG run](docs/images/airflow-successful-dag-run.png)
-
-## Suggested Learning Plan
-
-1. Understand the existing pipeline.
-   Follow one event from `data/raw/events.csv` into Kafka and then into Postgres.
-
-2. Learn Airflow DAG basics.
-   Read `dags/pulsegrid_event_pipeline.py` and identify each task and dependency.
-
-3. Make tasks idempotent.
-   Re-running a DAG should not corrupt results or create confusing duplicates.
-
-4. Add observability.
-   Add row counts, validation failure counts, and simple queries after loading.
-
-5. Add tests.
-   Start with unit tests for event validation and a small integration test for writing events to Postgres.
-
-6. Extend the transformation layer.
-   `transform.sql` already builds daily counts, a visitor funnel, and item popularity.
-   Next would be sessionization and joining `item_properties` and `category_tree`.
-
-7. Treat notebooks as consumers of curated data.
-   Keep exploration in notebooks, but keep repeatable pipeline logic in `src/pulsegrid`.
